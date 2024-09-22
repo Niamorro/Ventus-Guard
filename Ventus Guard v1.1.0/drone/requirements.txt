@@ -1,3 +1,0 @@
-rospy
-opencv-python
-websocket-client
