@@ -35,8 +35,9 @@ async function detectFaces(imageElement) {
     return detections;
 }
 
-function drawDetections(detections, ctx) {
-    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+function drawDetections(detections, ctx, img) {
+    // Сначала нарисуем исходное изображение
+    ctx.drawImage(img, 0, 0, ctx.canvas.width, ctx.canvas.height);
     
     detections.forEach(detection => {
         const { box } = detection;
@@ -198,8 +199,7 @@ ws.onmessage = async function(event) {
                         canvas.width = img.width;
                         canvas.height = img.height;
                         const ctx = canvas.getContext('2d');
-                        ctx.drawImage(img, 0, 0);
-                        drawDetections(detections, ctx);
+                        drawDetections(detections, ctx, img);
                         usbCamera.src = canvas.toDataURL();
                         
                         saveDetection(canvas.toDataURL());
