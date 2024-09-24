@@ -1,4 +1,5 @@
 import rospy
+import math
 from clover import srv
 from std_srvs.srv import Trigger
 from sensor_msgs.msg import BatteryState, NavSatFix, Image
@@ -28,6 +29,17 @@ bridge = CvBridge()
 ws = None
 is_connected = False
 usb_cap = None
+
+def navigate_wait(x=0, y=0, z=0, yaw=float('nan'), speed=0.5, frame_id='', auto_arm=False, tolerance=0.2):
+    navigate(x=x, y=y, z=z, yaw=yaw, speed=speed, frame_id=frame_id, auto_arm=auto_arm)
+
+    while not rospy.is_shutdown():
+        telem = get_telemetry(frame_id='navigate_target')
+        if math.sqrt(telem.x ** 2 + telem.y ** 2 + telem.z ** 2) < tolerance:
+            break
+        rospy.sleep(0.2)
+
+
 
 def set_led_color(r, g, b):
     leds = [LEDState(i, r, g, b) for i in range(72)]
@@ -80,7 +92,7 @@ def process_command(command):
         elif command['command'] == 'land':
             land()
         elif command['command'] == 'navigate':
-            navigate(x=command['x'], y=command['y'], z=command['z'], yaw=command.get('yaw', float('nan')), frame_id=command.get('frame_id', 'aruco_map'))
+            navigate_wait(x=command['x'], y=command['y'], z=command['z'], yaw=command.get('yaw', float('nan')), frame_id=command.get('frame_id', 'aruco_map'))
         elif command['command'] == 'set_velocity':
             set_velocity(vx=command['vx'], vy=command['vy'], vz=command['vz'], yaw=command.get('yaw', float('nan')), frame_id=command.get('frame_id', 'body'))
         elif command['command'] == 'set_led':
