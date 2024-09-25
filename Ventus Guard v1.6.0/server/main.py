@@ -23,7 +23,7 @@ clients = set()
 
 # Инициализация MediaPipe
 mp_pose = mp.solutions.pose
-pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.9)
+pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5)
 mp_drawing = mp.solutions.drawing_utils
 
 def process_image(image):
