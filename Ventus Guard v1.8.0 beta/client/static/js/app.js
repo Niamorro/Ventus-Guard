@@ -15,9 +15,67 @@ const blockValue = document.getElementById('block-value');
 const blockDirection = document.getElementById('block-direction');
 const detectionStatus = document.getElementById('detection-status').querySelector('span');
 
+const roverCamera = document.getElementById('rover-camera');
+const roverDetectionStatus = document.getElementById('rover-detection-status').querySelector('span');
+const scenarioDevice = document.getElementById('scenario-device');
+
+let isRoverScenarioRunning = false;
+
 let isScenarioRunning = false;
 
 const ws = new WebSocket(`ws://${window.location.host}/ws`);
+
+function updateRoverState(state) {
+    document.getElementById('rover-battery').textContent = state.battery.toFixed(2);
+    document.getElementById('rover-gps').textContent = `${state.gps.lat.toFixed(6)}, ${state.gps.lon.toFixed(6)}`;
+    document.getElementById('rover-status').textContent = state.status;
+}
+
+async function sendRoverCommand(command) {
+    return new Promise((resolve, reject) => {
+        ws.send(JSON.stringify({type: "rover_command", ...command}));
+        addDebugMessage(`Sent to Rover: ${JSON.stringify(command)}`);
+        setTimeout(resolve, 3000);
+    });
+}
+
+async function runRoverScenario() {
+    if (isRoverScenarioRunning) return;
+    isRoverScenarioRunning = true;
+    disableRoverManualControls();
+
+    const blocks = Array.from(scenarioBlocks.children);
+    for (let block of blocks) {
+        const [action, value] = block.textContent.split(':');
+        try {
+            if (action.startsWith('Start')) {
+                await sendRoverCommand({command: 'start'});
+            } else if (action.startsWith('Move')) {
+                const [_, direction] = action.split(' ');
+                const distance = parseFloat(value);
+                await sendRoverCommand({command: 'move', direction, distance});
+            } else if (action === 'Stop') {
+                await sendRoverCommand({command: 'stop'});
+            }
+            await new Promise(resolve => setTimeout(resolve, 5000));
+        } catch (error) {
+            console.error('Error executing rover command:', error);
+            addDebugMessage(`Error executing rover command: ${error.message}`);
+            break;
+        }
+    }
+
+    isRoverScenarioRunning = false;
+    enableRoverManualControls();
+}
+
+function disableRoverManualControls() {
+    document.querySelectorAll('#rover-basic-controls button, #rover-movement-controls button').forEach(btn => btn.disabled = true);
+}
+
+function enableRoverManualControls() {
+    document.querySelectorAll('#rover-basic-controls button, #rover-movement-controls button').forEach(btn => btn.disabled = false);
+}
 
 function updateDroneState(state) {
     document.getElementById('battery').textContent = state.battery.toFixed(2);
@@ -112,30 +170,70 @@ function enableManualControls() {
 ws.onmessage = function(event) {
     const data = JSON.parse(event.data);
     if (data.type === 'state') {
-        updateDroneState(data.data);
-        if (isScenarioRunning) {
-            disableManualControls();
-        } else {
-            enableManualControls();
+        if (data.device === 'drone') {
+            updateDroneState(data.data);
+        } else if (data.device === 'rover') {
+            updateRoverState(data.data);
         }
     } else if (data.type === 'camera') {
         const img = new Image();
         img.onload = function() {
-            if (data.name === 'main_camera') {
-                mainCamera.src = img.src;
-            } else if (data.name === 'usb_camera') {
-                usbCamera.src = img.src;
-                detectionStatus.textContent = 'Active';
-                detectionStatus.style.color = 'green';
+            if (data.device === 'drone') {
+                if (data.name === 'main_camera') {
+                    mainCamera.src = img.src;
+                } else if (data.name === 'usb_camera') {
+                    usbCamera.src = img.src;
+                    detectionStatus.textContent = 'Active';
+                    detectionStatus.style.color = 'green';
+                }
+            } else if (data.device === 'rover') {
+                roverCamera.src = img.src;
+                roverDetectionStatus.textContent = 'Active';
+                roverDetectionStatus.style.color = 'green';
             }
         }
         img.src = `data:image/jpeg;base64,${data.data}`;
     } else if (data.type === 'trigger_scenario') {
         addDebugMessage(data.message);
-        runScenarioBtn.click(); // Программно нажимаем кнопку запуска сценария
+        if (data.device === 'drone') {
+            runScenarioBtn.click();
+        } else if (data.device === 'rover') {
+            runRoverScenario();
+        }
     }
     addDebugMessage(`Received: ${JSON.stringify(data)}`);
 };
+
+// Добавляем обработчики событий для кнопок ровера
+['start', 'stop'].forEach(action => {
+    document.getElementById(`rover-${action}`).addEventListener('click', () => {
+        sendRoverCommand({command: action});
+    });
+});
+
+['forward', 'backward', 'left', 'right'].forEach(direction => {
+    document.getElementById(`rover-move-${direction}`).addEventListener('click', () => {
+        const distance = parseFloat(document.getElementById('rover-movement-distance').value);
+        sendRoverCommand({command: 'move', direction, distance});
+    });
+});
+
+document.getElementById('rover-set-led').addEventListener('click', () => {
+    const color = document.getElementById('rover-led-color').value;
+    const r = parseInt(color.substr(1,2), 16);
+    const g = parseInt(color.substr(3,2), 16);
+    const b = parseInt(color.substr(5,2), 16);
+    sendRoverCommand({command: "set_led", color: {r, g, b}});
+});
+
+// Обновляем функцию запуска сценария
+runScenarioBtn.addEventListener('click', () => {
+    if (scenarioDevice.value === 'drone') {
+        runScenario();
+    } else if (scenarioDevice.value === 'rover') {
+        runRoverScenario();
+    }
+});
 
 ['takeoff', 'land'].forEach(action => {
     document.getElementById(action).addEventListener('click', () => {

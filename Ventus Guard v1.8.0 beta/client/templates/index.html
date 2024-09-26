@@ -10,12 +10,13 @@
 <body>
     <div id="app">
         <div id="tabs">
-            <button class="tab-button active" data-tab="main-view">Main</button>
+            <button class="tab-button active" data-tab="drone-view">Drone</button>
+            <button class="tab-button" data-tab="rover-view">Rover</button>
             <button class="tab-button" data-tab="scenarios-view">Scenarios</button>
             <button class="tab-button" data-tab="debug-view">Debug</button>
         </div>
 
-        <div id="main-view" class="tab-content active">
+        <div id="drone-view" class="tab-content active">
             <h1>VentusGuard Drone Control</h1>
 
             <div id="video-streams">
@@ -59,8 +60,52 @@
             </div>
         </div>
 
+        <div id="rover-view" class="tab-content">
+            <h1>Rover Control</h1>
+            <div id="video-streams">
+                <div class="video-stream">
+                    <h3>Rover Camera</h3>
+                    <img id="rover-camera" src="" alt="Rover camera stream">
+                    <div id="rover-detection-status">
+                        Detection: Inactive
+                    </div>
+                </div>
+            </div>
+
+            <div id="rover-state">
+                <h2>Rover State</h2>
+                <p>Battery: <span id="rover-battery"></span>%</p>
+                <p>GPS: <span id="rover-gps"></span></p>
+                <p>Status: <span id="rover-status"></span></p>
+            </div>
+
+            <div id="rover-basic-controls">
+                <button id="rover-start">Start</button>
+                <button id="rover-stop">Stop</button>
+            </div>
+
+            <div id="rover-movement-controls">
+                <h3>Movement Controls</h3>
+                <button id="rover-move-forward">Forward</button>
+                <button id="rover-move-backward">Backward</button>
+                <button id="rover-move-left">Left</button>
+                <button id="rover-move-right">Right</button>
+                <input type="number" id="rover-movement-distance" value="1" min="0.1" max="10" step="0.1">
+            </div>
+
+            <div id="rover-led-control">
+                <h3>LED Control</h3>
+                <input type="color" id="rover-led-color">
+                <button id="rover-set-led">Set LED Color</button>
+            </div>
+        </div>
+
         <div id="scenarios-view" class="tab-content">
             <h2>Flight Scenarios</h2>
+            <select id="scenario-device">
+                <option value="drone">Drone</option>
+                <option value="rover">Rover</option>
+            </select>
             <div id="scenario-builder">
                 <select id="block-type">
                     <option value="takeoff">Takeoff</option>

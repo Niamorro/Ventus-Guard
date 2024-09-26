@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from datetime import datetime
 import os
 import threading
+import socketio
 
 app = FastAPI()
 
@@ -19,11 +20,12 @@ app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "client", "sta
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "client", "templates"))
 
 last_range = None
-DISTANCE_THRESHOLD = 0.3  # Пороговое значение изменения дистанции в метрах
-TAKEOFF_HEIGHT = 1.5  # Высота взлета в метрах
-takeoff_command_sent = True  # Флаг для отслеживания отправки команды взлета
+DISTANCE_THRESHOLD = 0.3
+TAKEOFF_HEIGHT = 1.5
+takeoff_command_sent = True
 
 drone_ws = None
+rover_sio = socketio.AsyncClient()
 clients = set()
 
 # Инициализация MediaPipe
@@ -36,17 +38,16 @@ def process_image(image):
     results = pose.process(image_rgb)
     
     if results.pose_landmarks:
-        # Рисуем скелет на изображении
         mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
         return image, True
     
     return image, False
 
-async def broadcast_image(image_data, name):
+async def broadcast_image(image_data, name, device):
     _, buffer = cv2.imencode('.jpg', image_data)
     jpg_as_text = base64.b64encode(buffer).decode('utf-8')
     for client in clients:
-        await client.send_text(json.dumps({"type": "camera", "name": name, "data": jpg_as_text}))
+        await client.send_text(json.dumps({"type": "camera", "name": name, "data": jpg_as_text, "device": device}))
 
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
@@ -56,19 +57,11 @@ async def root(request: Request):
 async def handle_alice_command(request: Request):
     global takeoff_command_sent
     data = await request.json()
-
-    # Извлекаем команду из запроса
     command = data['request']['command'].lower()
-
-    # Ответ Алисе
     response_text = "Команда не распознана."
-
-    # Обрабатываем команды
     if "безопасность" in command:
         takeoff_command_sent = False
         response_text = "Защита включена."
-
-    
     return {
         "response": {
             "text": response_text,
@@ -93,16 +86,11 @@ async def rangefinder_websocket(websocket: WebSocket):
 
 async def process_rangefinder_data(data):
     global last_range, takeoff_command_sent
-
     current_range = data["data"]["range"]
-
     if last_range is None:
         last_range = current_range
         return
-
-    # Проверяем, изменилась ли дистанция больше, чем на пороговое значение
     if abs(current_range - last_range) > DISTANCE_THRESHOLD and not takeoff_command_sent:
-        # Если дистанция значительно изменилась и команда еще не была отправлена
         for client in clients:
             await client.send_text(json.dumps({
                 "type": "trigger_scenario",
@@ -110,9 +98,6 @@ async def process_rangefinder_data(data):
             }))
             print("отправленно")
             takeoff_command_sent = True
-        
-
-    # Обновляем последнее известное значение дистанции
     last_range = current_range
 
 @app.websocket("/ws")
@@ -127,35 +112,54 @@ async def websocket_endpoint(websocket: WebSocket):
         clients.remove(websocket)
 
 async def process_command(command):
-    global drone_ws
-    if drone_ws:
-        await drone_ws.send_text(json.dumps(command))
-        try:
-            response = await asyncio.wait_for(drone_ws.receive_text(), timeout=1.0)
-            response_data = json.loads(response)
-            for client in clients:
-                await client.send_text(json.dumps({
-                    "type": "command_result",
-                    "command": command["command"],
-                    "success": response_data.get("success", False),
-                    "error": response_data.get("error")
-                }))
-        except asyncio.TimeoutError:
-            for client in clients:
-                await client.send_text(json.dumps({
-                    "type": "command_result",
-                    "command": command["command"],
-                    "success": False,
-                    "error": "Drone response timeout"
-                }))
-        except Exception as e:
-            for client in clients:
-                await client.send_text(json.dumps({
-                    "type": "command_result",
-                    "command": command["command"],
-                    "success": False,
-                    "error": str(e)
-                }))
+    if command.get('type') == 'command':
+        if drone_ws:
+            await drone_ws.send_text(json.dumps(command))
+            try:
+                response = await asyncio.wait_for(drone_ws.receive_text(), timeout=1.0)
+                response_data = json.loads(response)
+                for client in clients:
+                    await client.send_text(json.dumps({
+                        "type": "command_result",
+                        "command": command["command"],
+                        "success": response_data.get("success", False),
+                        "error": response_data.get("error")
+                    }))
+            except asyncio.TimeoutError:
+                for client in clients:
+                    await client.send_text(json.dumps({
+                        "type": "command_result",
+                        "command": command["command"],
+                        "success": False,
+                        "error": "Drone response timeout"
+                    }))
+            except Exception as e:
+                for client in clients:
+                    await client.send_text(json.dumps({
+                        "type": "command_result",
+                        "command": command["command"],
+                        "success": False,
+                        "error": str(e)
+                    }))
+    elif command.get('type') == 'rover_command':
+        if rover_sio.connected:
+            try:
+                response = await rover_sio.call('command', command, namespace='/vehicles')
+                for client in clients:
+                    await client.send_text(json.dumps({
+                        "type": "command_result",
+                        "command": command["command"],
+                        "success": response.get("success", False),
+                        "error": response.get("error")
+                    }))
+            except Exception as e:
+                for client in clients:
+                    await client.send_text(json.dumps({
+                        "type": "command_result",
+                        "command": command["command"],
+                        "success": False,
+                        "error": str(e)
+                    }))
 
 @app.websocket("/ws/drone")
 async def drone_websocket(websocket: WebSocket):
@@ -167,7 +171,7 @@ async def drone_websocket(websocket: WebSocket):
             data = await websocket.receive_text()
             data = json.loads(data)
             if data.get("type") == "state":
-                await broadcast_state(data)
+                await broadcast_state(data, 'drone')
             elif data.get("type") == "camera":
                 image_data = base64.b64decode(data["data"])
                 nparr = np.frombuffer(image_data, np.uint8)
@@ -176,21 +180,20 @@ async def drone_websocket(websocket: WebSocket):
                 processed_image, human_detected = process_image(image)
                 
                 if human_detected:
-                    # Сохраняем изображение с обнаруженным человеком
-                    save_detection(processed_image)
+                    save_detection(processed_image, 'drone')
                 
-                await broadcast_image(processed_image, data["name"])
+                await broadcast_image(processed_image, data["name"], 'drone')
     finally:
         drone_ws = None
 
-async def broadcast_state(state):
+async def broadcast_state(state, device):
     for client in clients:
-        await client.send_text(json.dumps({"type": "state", "data": state["data"]}))
+        await client.send_text(json.dumps({"type": "state", "data": state["data"], "device": device}))
 
-def save_detection(image):
+def save_detection(image, device):
     os.makedirs("detections", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"detection_{timestamp}.jpg"
+    filename = f"detection_{device}_{timestamp}.jpg"
     cv2.imwrite(f"detections/{filename}", image)
 
 @app.post("/save-detection")
@@ -199,8 +202,44 @@ async def save_detection_endpoint(request: Request):
     image_data = base64.b64decode(data['image'].split(',')[1])
     nparr = np.frombuffer(image_data, np.uint8)
     image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    save_detection(image)
+    save_detection(image, data.get('device', 'unknown'))
     return JSONResponse(content={"message": "Detection saved"})
+
+@rover_sio.event
+async def connect():
+    print('Connected to Rover')
+
+@rover_sio.event
+async def disconnect():
+    print('Disconnected from Rover')
+
+@rover_sio.on('state', namespace='/vehicles')
+async def on_rover_state(data):
+    await broadcast_state(data, 'rover')
+
+async def process_rover_video():
+    cap = cv2.VideoCapture('rtsp://192.168.10.115:8554/camera1')
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            continue
+        
+        processed_frame, human_detected = process_image(frame)
+        
+        if human_detected:
+            save_detection(processed_frame, 'rover')
+        
+        await broadcast_image(processed_frame, 'rover_camera', 'rover')
+        
+        await asyncio.sleep(0.1)  # Adjust the delay as needed
+
+async def startup_event():
+    await rover_sio.connect('http://192.168.10.115:3006', namespaces=['/vehicles'])
+    asyncio.create_task(process_rover_video())
+
+@app.on_event("startup")
+async def startup():
+    asyncio.create_task(startup_event())
 
 if __name__ == "__main__":
     import uvicorn
