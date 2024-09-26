@@ -13,6 +13,7 @@ const clearScenarioBtn = document.getElementById('clear-scenario');
 const blockType = document.getElementById('block-type');
 const blockValue = document.getElementById('block-value');
 const blockDirection = document.getElementById('block-direction');
+const detectionStatus = document.getElementById('detection-status').querySelector('span');
 
 let isScenarioRunning = false;
 
@@ -55,7 +56,7 @@ async function runScenario() {
     isScenarioRunning = true;
     disableManualControls();
 
-    const blocks = scenarioBlocks.children;
+    const blocks = Array.from(scenarioBlocks.children);
     for (let block of blocks) {
         const [action, value] = block.textContent.split(':');
         try {
@@ -67,19 +68,18 @@ async function runScenario() {
                 let x = 0, y = 0, z = 0;
                 if (direction === 'forward') x = distance;
                 if (direction === 'backward') x = -distance;
-                if (direction === 'left') y = -distance;
-                if (direction === 'right') y = distance;
+                if (direction === 'left') y = distance;
+                if (direction === 'right') y = -distance;
                 if (direction === 'up') z = distance;
                 await sendCommand({command: 'navigate', x, y, z, frame_id: 'body'});
             } else if (action === 'Land') {
                 await sendCommand({command: 'land'});
             }
-            // Ожидание завершения команды и получения подтверждения от дрона
-            await new Promise(resolve => setTimeout(resolve, 5000)); // Увеличено время ожидания до 5 секунд
+            await new Promise(resolve => setTimeout(resolve, 5000));
         } catch (error) {
             console.error('Error executing command:', error);
             addDebugMessage(`Error executing command: ${error.message}`);
-            break; // Прерываем выполнение сценария при ошибке
+            break;
         }
     }
 
@@ -91,30 +91,11 @@ async function sendCommand(command) {
     return new Promise((resolve, reject) => {
         ws.send(JSON.stringify({type: "command", ...command}));
         addDebugMessage(`Sent: ${JSON.stringify(command)}`);
-        
-        // Устанавливаем таймаут для ожидания ответа от дрона
-        const timeout = setTimeout(() => {
-            reject(new Error('Command timeout'));
-        }, 4000); // 4 секунды таймаута
-
-        // Функция для обработки ответа от дрона
-        const handleResponse = (event) => {
-            const response = JSON.parse(event.data);
-            if (response.type === 'command_result' && response.command === command.command) {
-                clearTimeout(timeout);
-                ws.removeEventListener('message', handleResponse);
-                if (response.success) {
-                    resolve(response);
-                } else {
-                    reject(new Error(response.error || 'Command failed'));
-                }
-            }
-        };
-
-        // Добавляем временный слушатель для ответа
-        ws.addEventListener('message', handleResponse);
+        // In a real-world scenario, you'd wait for a confirmation from the drone before resolving
+        setTimeout(resolve, 3000);
     });
 }
+
 
 function clearScenario() {
     scenarioBlocks.innerHTML = '';
@@ -128,15 +109,6 @@ function enableManualControls() {
     document.querySelectorAll('#basic-controls button, #movement-controls button').forEach(btn => btn.disabled = false);
 }
 
-async function sendCommand(command) {
-    return new Promise((resolve, reject) => {
-        ws.send(JSON.stringify({type: "command", ...command}));
-        addDebugMessage(`Sent: ${JSON.stringify(command)}`);
-        // In a real-world scenario, you'd wait for a confirmation from the drone before resolving
-        setTimeout(resolve, 1000);
-    });
-}
-
 ws.onmessage = function(event) {
     const data = JSON.parse(event.data);
     if (data.type === 'state') {
@@ -147,11 +119,20 @@ ws.onmessage = function(event) {
             enableManualControls();
         }
     } else if (data.type === 'camera') {
-        if (data.name === 'main_camera') {
-            mainCamera.src = `data:image/jpeg;base64,${data.data}`;
-        } else if (data.name === 'usb_camera') {
-            usbCamera.src = `data:image/jpeg;base64,${data.data}`;
+        const img = new Image();
+        img.onload = function() {
+            if (data.name === 'main_camera') {
+                mainCamera.src = img.src;
+            } else if (data.name === 'usb_camera') {
+                usbCamera.src = img.src;
+                detectionStatus.textContent = 'Active';
+                detectionStatus.style.color = 'green';
+            }
         }
+        img.src = `data:image/jpeg;base64,${data.data}`;
+    } else if (data.type === 'trigger_scenario') {
+        addDebugMessage(data.message);
+        runScenarioBtn.click(); // Программно нажимаем кнопку запуска сценария
     }
     addDebugMessage(`Received: ${JSON.stringify(data)}`);
 };
@@ -175,8 +156,8 @@ ws.onmessage = function(event) {
         let x = 0, y = 0;
         if (direction === 'forward') x = distance;
         if (direction === 'backward') x = -distance;
-        if (direction === 'left') y = -distance;
-        if (direction === 'right') y = distance;
+        if (direction === 'left') y = distance;
+        if (direction === 'right') y = -distance;
         sendCommand({command: 'navigate', x, y, z: 0, frame_id: 'body'});
     });
 });

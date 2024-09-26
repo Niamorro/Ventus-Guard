@@ -1,7 +1,7 @@
 import rospy
+import math
 from clover import srv
 from std_srvs.srv import Trigger
-from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import BatteryState, NavSatFix, Image
 from cv_bridge import CvBridge
 import cv2
@@ -11,6 +11,8 @@ import websocket
 import threading
 from led_msgs.srv import SetLEDs
 from led_msgs.msg import LEDStateArray, LEDState
+import numpy as np
+from clover.srv import SetLEDEffect
 
 rospy.init_node('drone_control')
 
@@ -23,10 +25,23 @@ set_attitude = rospy.ServiceProxy('set_attitude', srv.SetAttitude)
 set_rates = rospy.ServiceProxy('set_rates', srv.SetRates)
 land = rospy.ServiceProxy('land', Trigger)
 set_leds = rospy.ServiceProxy('led/set_leds', SetLEDs)
+set_effect = rospy.ServiceProxy('led/set_effect', SetLEDEffect) 
 
 bridge = CvBridge()
 ws = None
 is_connected = False
+usb_cap = None
+
+def navigate_wait(x=0, y=0, z=0, yaw=float('nan'), speed=0.5, frame_id='', auto_arm=False, tolerance=0.2):
+    navigate(x=x, y=y, z=z, yaw=yaw, speed=speed, frame_id=frame_id, auto_arm=auto_arm)
+
+    while not rospy.is_shutdown():
+        telem = get_telemetry(frame_id='navigate_target')
+        if math.sqrt(telem.x ** 2 + telem.y ** 2 + telem.z ** 2) < tolerance:
+            break
+        rospy.sleep(0.2)
+
+
 
 def set_led_color(r, g, b):
     leds = [LEDState(i, r, g, b) for i in range(72)]
@@ -49,8 +64,8 @@ def yellow_waiting_animation():
 def get_drone_state():
     try:
         telemetry = get_telemetry(frame_id='map')
-        battery = rospy.wait_for_message('mavros/battery', BatteryState, timeout=0.5)
-        gps = rospy.wait_for_message('mavros/global_position/global', NavSatFix, timeout=0.5)
+        battery = rospy.wait_for_message('mavros/battery', BatteryState, timeout=2.0)
+        gps = rospy.wait_for_message('mavros/global_position/global', NavSatFix, timeout=2.0)
         return {
             "battery": battery.percentage * 100,
             "altitude": telemetry.z,
@@ -60,8 +75,8 @@ def get_drone_state():
             "y": telemetry.y,
             "yaw": telemetry.yaw
         }
-    except rospy.exceptions.ROSException:
-        rospy.logwarn_throttle(10, "Timeout while waiting for drone state. Using default values.")
+    except (rospy.exceptions.ROSException, rospy.ServiceException) as e:
+        rospy.logwarn_throttle(10, f"Error getting drone state: {e}. Using default values.")
         return {
             "battery": 0,
             "altitude": 0,
@@ -75,11 +90,12 @@ def get_drone_state():
 def process_command(command):
     try:
         if command['command'] == 'takeoff':
+            set_effect(effect='fade', r=255, g=0, b=0)
             navigate(x=0, y=0, z=command.get('height', 1.5), frame_id='body', auto_arm=True)
         elif command['command'] == 'land':
             land()
         elif command['command'] == 'navigate':
-            navigate(x=command['x'], y=command['y'], z=command['z'], yaw=command.get('yaw', float('nan')), frame_id=command.get('frame_id', 'aruco_map'))
+            navigate_wait(x=command['x'], y=command['y'], z=command['z'], yaw=command.get('yaw', float('nan')), frame_id=command.get('frame_id', 'aruco_map'))
         elif command['command'] == 'set_velocity':
             set_velocity(vx=command['vx'], vy=command['vy'], vz=command['vz'], yaw=command.get('yaw', float('nan')), frame_id=command.get('frame_id', 'body'))
         elif command['command'] == 'set_led':
@@ -103,10 +119,29 @@ def send_state(event):
             rospy.logerr(f"Error sending state: {str(e)}")
 
 def camera_callback(data, camera_name):
-    global ws
+    global ws, usb_cap
     if ws and ws.sock and ws.sock.connected:
-        cv_image = bridge.imgmsg_to_cv2(data, 'bgr8')
-        _, buffer = cv2.imencode('.jpg', cv_image)
+        if camera_name == 'main_camera':
+            cv_image = bridge.imgmsg_to_cv2(data, 'bgr8')
+        elif camera_name == 'usb_camera' and usb_cap:
+            ret, cv_image = usb_cap.read()
+            if not ret:
+                rospy.logwarn("Failed to capture frame from USB camera. Attempting to reinitialize...")
+                usb_cap.release()
+                usb_cap = cv2.VideoCapture(0)
+                if not usb_cap.isOpened():
+                    rospy.logerr("Failed to reinitialize USB camera")
+                    return
+                ret, cv_image = usb_cap.read()
+                if not ret:
+                    rospy.logerr("Still failed to capture frame after reinitialization")
+                    return
+        else:
+            return
+
+        # Оптимизация передачи изображения
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 60]
+        _, buffer = cv2.imencode('.jpg', cv_image, encode_param)
         jpg_as_text = base64.b64encode(buffer).decode('utf-8')
         ws.send(json.dumps({"type": "camera", "name": camera_name, "data": jpg_as_text}))
 
@@ -155,18 +190,12 @@ def websocket_thread():
 if __name__ == "__main__":
     rospy.Subscriber('/main_camera/image_raw', Image, lambda msg: camera_callback(msg, 'main_camera'))
     
-    # Поиск доступных USB-камер
-    available_cameras = []
-    for i in range(10):  # Проверяем первые 10 возможных индексов камер
-        cap = cv2.VideoCapture(i)
-        if cap.isOpened():
-            available_cameras.append(i)
-            cap.release()
-    
-    print(f"Available USB cameras: {available_cameras}")
-    
-    if available_cameras:
-        rospy.Subscriber(f'/usb_cam_{available_cameras[0]}/image_raw', Image, lambda msg: camera_callback(msg, 'usb_camera'))
+    usb_cap = cv2.VideoCapture(0)
+    if not usb_cap.isOpened():
+        rospy.logwarn("No USB camera found")
+    else:
+        rospy.loginfo(f"USB camera initialized")
+        rospy.Timer(rospy.Duration(0.1), lambda event: camera_callback(None, 'usb_camera'))
     
     rospy.Timer(rospy.Duration(1), send_state)
 
