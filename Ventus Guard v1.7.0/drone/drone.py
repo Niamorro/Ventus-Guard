@@ -12,6 +12,7 @@ import threading
 from led_msgs.srv import SetLEDs
 from led_msgs.msg import LEDStateArray, LEDState
 import numpy as np
+from clover.srv import SetLEDEffect
 
 rospy.init_node('drone_control')
 
@@ -24,6 +25,7 @@ set_attitude = rospy.ServiceProxy('set_attitude', srv.SetAttitude)
 set_rates = rospy.ServiceProxy('set_rates', srv.SetRates)
 land = rospy.ServiceProxy('land', Trigger)
 set_leds = rospy.ServiceProxy('led/set_leds', SetLEDs)
+set_effect = rospy.ServiceProxy('led/set_effect', SetLEDEffect) 
 
 bridge = CvBridge()
 ws = None
@@ -88,6 +90,7 @@ def get_drone_state():
 def process_command(command):
     try:
         if command['command'] == 'takeoff':
+            set_effect(effect='fade', r=255, g=0, b=0)
             navigate(x=0, y=0, z=command.get('height', 1.5), frame_id='body', auto_arm=True)
         elif command['command'] == 'land':
             land()

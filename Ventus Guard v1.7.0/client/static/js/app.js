@@ -128,8 +128,11 @@ ws.onmessage = function(event) {
                 detectionStatus.textContent = 'Active';
                 detectionStatus.style.color = 'green';
             }
-        };
+        }
         img.src = `data:image/jpeg;base64,${data.data}`;
+    } else if (data.type === 'trigger_scenario') {
+        addDebugMessage(data.message);
+        runScenarioBtn.click(); // Программно нажимаем кнопку запуска сценария
     }
     addDebugMessage(`Received: ${JSON.stringify(data)}`);
 };

@@ -18,6 +18,11 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "client", "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "client", "templates"))
 
+last_range = None
+DISTANCE_THRESHOLD = 0.3  # Пороговое значение изменения дистанции в метрах
+TAKEOFF_HEIGHT = 1.5  # Высота взлета в метрах
+takeoff_command_sent = True  # Флаг для отслеживания отправки команды взлета
+
 drone_ws = None
 clients = set()
 
@@ -46,6 +51,69 @@ async def broadcast_image(image_data, name):
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
+
+@app.post("/alice")
+async def handle_alice_command(request: Request):
+    global takeoff_command_sent
+    data = await request.json()
+
+    # Извлекаем команду из запроса
+    command = data['request']['command'].lower()
+
+    # Ответ Алисе
+    response_text = "Команда не распознана."
+
+    # Обрабатываем команды
+    if "безопасность" in command:
+        takeoff_command_sent = False
+        response_text = "Защита включена."
+
+    
+    return {
+        "response": {
+            "text": response_text,
+            "end_session": False
+        },
+        "version": "1.0"
+    }
+
+@app.websocket("/ws/rangefinder")
+async def rangefinder_websocket(websocket: WebSocket):
+    await websocket.accept()
+    global rangefinder_ws
+    rangefinder_ws = websocket
+    try:
+        while True:
+            data = await websocket.receive_text()
+            data = json.loads(data)
+            if data.get("type") == "rangefinder":
+                await process_rangefinder_data(data)
+    finally:
+        rangefinder_ws = None
+
+async def process_rangefinder_data(data):
+    global last_range, takeoff_command_sent
+
+    current_range = data["data"]["range"]
+
+    if last_range is None:
+        last_range = current_range
+        return
+
+    # Проверяем, изменилась ли дистанция больше, чем на пороговое значение
+    if abs(current_range - last_range) > DISTANCE_THRESHOLD and not takeoff_command_sent:
+        # Если дистанция значительно изменилась и команда еще не была отправлена
+        for client in clients:
+            await client.send_text(json.dumps({
+                "type": "trigger_scenario",
+                "message": "Distance change detected, triggering scenario"
+            }))
+            print("отправленно")
+            takeoff_command_sent = True
+        
+
+    # Обновляем последнее известное значение дистанции
+    last_range = current_range
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
